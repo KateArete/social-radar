@@ -1,5 +1,7 @@
 'use client';
 import { useState, useRef, useEffect } from 'react';
+const PAYMENT_LINK = process.env.NEXT_PUBLIC_STRIPE_PAYMENT_LINK;
+
 
 // ── Constants ──
 const EXAMPLES = [
@@ -350,6 +352,32 @@ export default function SocialRadar() {
           }}>
           {scanning ? '◎ SCANNING SIGNAL…' : '⎊ ANALYZE MESSAGE'}
         </button>
+{PAYMENT_LINK && (
+  <a
+    href={PAYMENT_LINK}
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{
+      display: 'block',
+      width: '100%',
+      textAlign: 'center',
+      padding: 14,
+      marginTop: -16,     // pulls it up closer since CTA has marginBottom: 28
+      marginBottom: 28,   // keeps spacing consistent
+      borderRadius: 12,
+      background: 'rgba(255,255,255,0.06)',
+      border: '1px solid rgba(255,255,255,0.12)',
+      color: 'rgba(255,255,255,0.85)',
+      font: '700 12px/1 var(--mono)',
+      letterSpacing: 2,
+      textTransform: 'uppercase',
+      textDecoration: 'none',
+      cursor: 'pointer',
+    }}
+  >
+    Upgrade / Subscribe
+  </a>
+)}
 
         {/* ── Error ── */}
         {error && (
