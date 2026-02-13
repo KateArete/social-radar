@@ -1,6 +1,6 @@
 'use client';
-// ═══ SOCIAL RADAR v2.2 — FINAL BUILD ═══
-// Includes: multi-upload (3), micro-animations, empty state hint,
+// ═══ SOCIAL RADAR v2.3 — FINAL BUILD ═══
+// Includes: multi-upload (3) with client-side compression,
 // share glow button, verdict hierarchy, enhanced radar chart
 // (color-coded segments, tooltips, score labels), rate limit support
 // Last updated: 2026-02-13
@@ -305,11 +305,44 @@ export default function SocialRadar() {
     }
   };
 
-  const handleFileUpload = (e) => {
+  // Compress an image file to max 1MB / 1600px — keeps Vercel body limit safe
+  const compressImage = (file, maxWidth = 1600, quality = 0.8) => {
+    return new Promise((resolve) => {
+      // If already small, skip compression
+      if (file.size < 500_000) { resolve(file); return; }
+
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = img.width > maxWidth ? maxWidth / img.width : 1;
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) { resolve(file); return; }
+            const compressed = new File([blob], file.name, { type: 'image/jpeg' });
+            resolve(compressed);
+          },
+          'image/jpeg',
+          quality
+        );
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  };
+
+  const handleFileUpload = async (e) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
+    // Compress all files in parallel
+    const compressed = await Promise.all(files.map((f) => compressImage(f)));
     setUploadedImages((prev) => {
-      const combined = [...prev, ...files];
+      const combined = [...prev, ...compressed];
       // Client-side enforce max 3
       return combined.slice(0, 3);
     });

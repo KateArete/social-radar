@@ -1,194 +1,231 @@
 // app/api/analyze/route.js
-// ─────────────────────────────────────────────────────────
-// Secure proxy: frontend calls this → this calls Anthropic
-// API key never leaves the server.
-// ─────────────────────────────────────────────────────────
+export const runtime = "nodejs"; // needs node for Buffer/base64 reliably
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_PER_DAY || '50', 10);
-const MAX_INPUT_LENGTH = 5000; // characters
-const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5 MB
+// ---- Config you can control via env ----
+const MAX_IMAGES = 3;
+const MAX_IMAGE_BYTES = 6 * 1024 * 1024; // 6MB per image (adjust if you want)
+const MODEL = process.env.AI_MODEL || "gpt-4o-mini";
 
-// Simple in-memory rate limiter (resets on cold start / redeploy)
-// For production at scale, use Vercel KV or Upstash Redis
-const rateLimitMap = new Map();
+// If you are using Vercel AI Gateway, set:
+//   AI_BASE_URL=https://ai-gateway.vercel.sh/v1
+//   AI_API_KEY=...
+// If not using gateway, set OpenAI directly:
+//   OPENAI_API_KEY=...
+const AI_BASE_URL = process.env.AI_BASE_URL || "https://api.openai.com/v1";
+const AI_API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
 
-function getRateLimitKey(request) {
-  const forwarded = request.headers.get('x-forwarded-for');
-  const ip = forwarded ? forwarded.split(',')[0].trim() : 'unknown';
-  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  return `${ip}:${today}`;
+// ---- Optional super-simple in-memory rate limit (per server instance) ----
+// NOTE: On Vercel serverless this resets often. For real prod, swap to Upstash.
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 12; // 12 requests/minute per IP
+const rl = globalThis.__social_radar_rl || new Map();
+globalThis.__social_radar_rl = rl;
+
+function rateLimit(ip) {
+  const now = Date.now();
+  const entry = rl.get(ip) || { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+  if (now > entry.resetAt) {
+    entry.count = 0;
+    entry.resetAt = now + RATE_LIMIT_WINDOW_MS;
+  }
+  entry.count += 1;
+  rl.set(ip, entry);
+  const remaining = Math.max(0, RATE_LIMIT_MAX - entry.count);
+  const limited = entry.count > RATE_LIMIT_MAX;
+  return {
+    limited,
+    remaining,
+    resetAt: entry.resetAt,
+  };
 }
 
-function checkRateLimit(key) {
-  const count = rateLimitMap.get(key) || 0;
-  if (count >= RATE_LIMIT) return false;
-  rateLimitMap.set(key, count + 1);
-  if (rateLimitMap.size > 10000) {
-    const today = new Date().toISOString().slice(0, 10);
-    for (const [k] of rateLimitMap) {
-      if (!k.endsWith(today)) rateLimitMap.delete(k);
-    }
-  }
-  return true;
+function json(status, obj, extraHeaders = {}) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      ...extraHeaders,
+    },
+  });
 }
 
-// Map common file extensions / MIME types to what Claude expects
-function getMediaType(file) {
-  const type = file.type?.toLowerCase() || '';
-  if (type === 'image/jpeg' || type === 'image/jpg') return 'image/jpeg';
-  if (type === 'image/png') return 'image/png';
-  if (type === 'image/gif') return 'image/gif';
-  if (type === 'image/webp') return 'image/webp';
-  // Fallback: guess from filename
-  const ext = (file.name || '').split('.').pop()?.toLowerCase();
-  const extMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp' };
-  return extMap[ext] || 'image/png';
+function getClientIp(req) {
+  // Vercel / proxies
+  const xf = req.headers.get("x-forwarded-for");
+  if (xf) return xf.split(",")[0].trim();
+  return req.headers.get("x-real-ip") || "unknown";
 }
 
-const SYSTEM_PROMPT = `You are Social Radar, a brutally honest communication analyst. Analyze the provided message (text and/or screenshot) and return ONLY valid JSON. No markdown, no backticks, no preamble.
+async function fileToDataUrl(file) {
+  const ab = await file.arrayBuffer();
+  const b64 = Buffer.from(ab).toString("base64");
+  const mime = file.type || "application/octet-stream";
+  return `data:${mime};base64,${b64}`;
+}
 
-Return this exact JSON structure:
-{
-  "verdict": "GREEN FLAG|PROCEED WITH CAUTION|RED FLAG DETECTED|NEUTRAL SIGNAL|MIXED SIGNALS",
-  "verdict_emoji": "🟢|🟡|🔴|⚪|🟠",
-  "scores": {
-    "interest": <0-100>,
-    "honesty": <0-100>,
-    "power": <0-100>,
-    "anxiety": <0-100>,
-    "manipulation": <0-100>
-  },
-  "translation": "<2-3 sentences, brutally honest, witty. What they ACTUALLY mean.>",
-  "hidden_tone": "<1 short sentence: the real emotional undercurrent>",
-  "red_flags": ["<flag>", ...],
-  "green_flags": ["<flag>", ...],
-  "power_dynamic": "<1 sentence>",
-  "advice": "<1-2 sentences practical advice>",
-  "replies": {
-    "assertive": "<A confident, boundary-setting response. 1-2 sentences.>",
-    "chill": "<A calm, low-pressure response. 1-2 sentences.>",
-    "mirror": "<Match their energy back at them. 1-2 sentences.>"
-  }
-}`;
+function isLikelyImage(file) {
+  return file && typeof file.type === "string" && file.type.startsWith("image/");
+}
 
-export async function POST(request) {
-  // ── Validate API key is configured ──
-  if (!ANTHROPIC_API_KEY || ANTHROPIC_API_KEY === 'sk-ant-your-key-here') {
-    return Response.json(
-      { error: 'Server not configured. Add ANTHROPIC_API_KEY to environment variables.' },
-      { status: 500 }
-    );
-  }
-
-  // ── Rate limit ──
-  const rlKey = getRateLimitKey(request);
-  if (!checkRateLimit(rlKey)) {
-    return Response.json(
-      { error: 'Rate limit reached. Try again tomorrow.' },
-      { status: 429 }
-    );
-  }
-
-  // ── Parse FormData ──
-  let formData;
+export async function POST(req) {
   try {
-    formData = await request.formData();
-  } catch {
-    return Response.json({ error: 'Invalid request format' }, { status: 400 });
-  }
-
-  const text = formData.get('text')?.toString().trim() || '';
-  const imageFile = formData.get('image');
-
-  // Must have at least text or an image
-  if (!text && !imageFile) {
-    return Response.json({ error: 'Provide a message or upload a screenshot' }, { status: 400 });
-  }
-
-  if (text.length > MAX_INPUT_LENGTH) {
-    return Response.json(
-      { error: `Message too long. Max ${MAX_INPUT_LENGTH} characters.` },
-      { status: 400 }
-    );
-  }
-
-  // ── Build the Claude message content array ──
-  const contentParts = [];
-
-  // Add image if provided
-  if (imageFile && imageFile.size > 0) {
-    if (imageFile.size > MAX_IMAGE_SIZE) {
-      return Response.json({ error: 'Image too large. Max 5 MB.' }, { status: 400 });
-    }
-
-    const arrayBuffer = await imageFile.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString('base64');
-    const mediaType = getMediaType(imageFile);
-
-    contentParts.push({
-      type: 'image',
-      source: {
-        type: 'base64',
-        media_type: mediaType,
-        data: base64,
-      },
-    });
-  }
-
-  // Add text prompt
-  const userText = text
-    ? `Analyze this message:\n\n"""\n${text}\n"""`
-    : 'Analyze the message shown in this screenshot.';
-
-  contentParts.push({ type: 'text', text: userText });
-
-  // ── Call Anthropic ──
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        messages: [
-          {
-            role: 'user',
-            content: contentParts,
-          },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error('Anthropic API error:', response.status, errBody);
-      return Response.json(
-        { error: 'Analysis failed. Please try again.' },
-        { status: 502 }
+    // ---- Rate limit ----
+    const ip = getClientIp(req);
+    const rlRes = rateLimit(ip);
+    const rlHeaders = {
+      "X-RateLimit-Limit": String(RATE_LIMIT_MAX),
+      "X-RateLimit-Remaining": String(rlRes.remaining),
+      "X-RateLimit-Reset": String(Math.floor(rlRes.resetAt / 1000)),
+    };
+    if (rlRes.limited) {
+      return json(
+        429,
+        { error: "Rate limit exceeded. Please wait a moment and try again." },
+        rlHeaders
       );
     }
 
-    const data = await response.json();
-    const rawText = (data.content || []).map((b) => b.text || '').join('');
-    const cleaned = rawText.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
+    // ---- Parse multipart form ----
+    const formData = await req.formData();
 
-    return Response.json(parsed);
-  } catch (error) {
-    console.error('Analyze error:', error);
+    // IMPORTANT: match your frontend keys
+    const text = (formData.get("text") || "").toString().trim();
 
-    return new Response(
-      JSON.stringify({ error: error.message || 'Server failure' }),
-      {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
+    // ✅ THIS is the fix: getAll("images") not get("image")
+    const rawImages = formData.getAll("images") || [];
+    const images = rawImages.filter(Boolean);
+
+    // ---- Validate ----
+    if (!text && images.length === 0) {
+      return json(
+        400,
+        { error: "Provide a message or upload a screenshot" },
+        rlHeaders
+      );
+    }
+
+    if (images.length > MAX_IMAGES) {
+      return json(400, { error: `Max ${MAX_IMAGES} screenshots allowed` }, rlHeaders);
+    }
+
+    for (const f of images) {
+      // In Next/undici formData, uploaded files come through as File
+      if (!(f instanceof File)) {
+        return json(400, { error: "Invalid upload. Please upload image files only." }, rlHeaders);
       }
-    );
+      if (!isLikelyImage(f)) {
+        return json(400, { error: "Only image uploads are supported." }, rlHeaders);
+      }
+      if (typeof f.size === "number" && f.size > MAX_IMAGE_BYTES) {
+        return json(
+          400,
+          { error: `Each image must be under ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB.` },
+          rlHeaders
+        );
+      }
+    }
+
+    if (!AI_API_KEY) {
+      return json(
+        500,
+        { error: "Server is missing AI_API_KEY / OPENAI_API_KEY env var." },
+        rlHeaders
+      );
+    }
+
+    // ---- Build multimodal content ----
+    const content = [];
+
+    if (text) {
+      content.push({
+        type: "text",
+        text:
+          `You are Social Radar. Analyze the user's message(s) and/or screenshots.\n\n` +
+          `Output STRICT JSON with this schema:\n` +
+          `{\n` +
+          `  "verdict": "green" | "yellow" | "red",\n` +
+          `  "summary": string,\n` +
+          `  "scores": { "interest": number, "respect": number, "clarity": number, "risk": number, "compatibility": number },\n` +
+          `  "signals": string[],\n` +
+          `  "what_to_do_next": string[],\n` +
+          `  "suggested_reply": string\n` +
+          `}\n\n` +
+          `User text:\n${text}`
+      });
+    }
+
+    // add images as data urls
+    for (const f of images) {
+      const dataUrl = await fileToDataUrl(f);
+      content.push({
+        type: "image_url",
+        image_url: { url: dataUrl },
+      });
+    }
+
+    // ---- Call OpenAI-compatible endpoint ----
+    // Works for OpenAI direct and many gateways that mimic OpenAI API.
+    const body = {
+      model: MODEL,
+      temperature: 0.4,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a careful analyst. Return valid JSON only. No markdown, no backticks.",
+        },
+        {
+          role: "user",
+          content,
+        },
+      ],
+    };
+
+    const resp = await fetch(`${AI_BASE_URL.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${AI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      return json(
+        500,
+        {
+          error: "AI request failed",
+          status: resp.status,
+          details: errText?.slice(0, 800) || "",
+        },
+        rlHeaders
+      );
+    }
+
+    const data = await resp.json();
+
+    const raw =
+      data?.choices?.[0]?.message?.content ??
+      data?.choices?.[0]?.text ??
+      "";
+
+    // raw should already be JSON (due to response_format), but guard anyway
+    let parsed;
+    try {
+      parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch {
+      // If the model returns something weird, still return it for debugging
+      return json(
+        500,
+        { error: "Model returned non-JSON output", raw: String(raw).slice(0, 1500) },
+        rlHeaders
+      );
+    }
+
+    return json(200, { result: parsed }, rlHeaders);
+  } catch (e) {
+    return json(500, { error: "Server error", details: String(e?.message || e) });
   }
 }
