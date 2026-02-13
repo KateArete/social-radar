@@ -1,4 +1,9 @@
 'use client';
+// ═══ SOCIAL RADAR v2.2 — FINAL BUILD ═══
+// Includes: multi-upload (3), micro-animations, empty state hint,
+// share glow button, verdict hierarchy, enhanced radar chart
+// (color-coded segments, tooltips, score labels), rate limit support
+// Last updated: 2026-02-13
 import { useState, useRef, useEffect } from 'react';
 
 // ── Constants ──
@@ -9,12 +14,29 @@ const EXAMPLES = [
 ];
 
 const SCORE_META = [
-  { key: 'interest', label: 'Interest', icon: '💘' },
-  { key: 'honesty', label: 'Honesty', icon: '🎭' },
-  { key: 'power', label: 'Power Play', icon: '👑' },
-  { key: 'anxiety', label: 'Anxiety', icon: '⚡' },
-  { key: 'manipulation', label: 'Manipulation', icon: '🕸️' },
+  { key: 'interest', label: 'Interest', icon: '💘',
+    tips: { low: 'Low investment — they\'re keeping emotional distance.', mid: 'Moderate interest — engaged but holding back.', high: 'High interest — they\'re emotionally invested in this.' } },
+  { key: 'honesty', label: 'Honesty', icon: '🎭',
+    tips: { low: 'Heavily filtered — what you see isn\'t what they mean.', mid: 'Partially honest — truth mixed with strategic framing.', high: 'High authenticity — saying what they actually feel.' } },
+  { key: 'power', label: 'Power Play', icon: '👑',
+    tips: { low: 'Minimal power plays — meeting you at eye level.', mid: 'Some leverage — controlling pace or framing.', high: 'High leverage — sender controls the interaction dynamics.' } },
+  { key: 'anxiety', label: 'Anxiety', icon: '⚡',
+    tips: { low: 'Calm and composed — no nervous energy detected.', mid: 'Some tension — hedging or over-explaining.', high: 'High anxiety — overcompensating, softening, or deflecting.' } },
+  { key: 'manipulation', label: 'Manipulation', icon: '🕸️',
+    tips: { low: 'Straightforward — no hidden agenda detected.', mid: 'Some strategic framing — calculated but not malicious.', high: 'Manipulation detected — guilt-shifting, gaslighting, or pressure.' } },
 ];
+
+// Color helper: green for low-risk, amber for caution, red for high-risk
+function scoreColor(value) {
+  return value > 70 ? 'var(--red)' : value > 40 ? 'var(--amber)' : 'var(--green)';
+}
+function scoreColorRaw(value) {
+  return value > 70 ? '#ff2d55' : value > 40 ? '#ffb800' : '#00ffaa';
+}
+function scoreTip(meta, value) {
+  const level = value > 70 ? 'high' : value > 40 ? 'mid' : 'low';
+  return meta.tips?.[level] || '';
+}
 
 // ── Styles (CSS-in-JS for single-file simplicity) ──
 const S = {
@@ -45,14 +67,31 @@ const S = {
     @keyframes gridDrift { 0%{background-position:0 0,0 0,0 0,0 0} 100%{background-position:0 0,0 0,32px 32px,32px 32px} }
     @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
     @keyframes scanY { 0%{top:0} 100%{top:100%} }
+    @keyframes shareGlow {
+      0%,100% { box-shadow: 0 0 16px rgba(0,255,170,0.15), 0 0 40px rgba(0,255,170,0.06); }
+      50% { box-shadow: 0 0 24px rgba(0,255,170,0.3), 0 0 60px rgba(0,255,170,0.1); }
+    }
+    @keyframes shimmer {
+      0% { background-position: -200% center; }
+      100% { background-position: 200% center; }
+    }
+    @keyframes hintFloat {
+      0%,100% { transform: translateY(0); }
+      50% { transform: translateY(-3px); }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
     textarea::placeholder { color: rgba(255,255,255,0.15) !important; }
     textarea:focus { outline: none; }
   `,
 };
 
-// ── Radar Chart SVG ──
+// ── Radar Chart SVG (Enhanced) ──
 function RadarChart({ scores, animate }) {
-  const size = 240, cx = size / 2, cy = size / 2, R = 90;
+  const [activeTip, setActiveTip] = useState(null);
+  const size = 280, cx = size / 2, cy = size / 2, R = 105;
   const pt = (i, v) => {
     const a = (Math.PI * 2 * i) / 5 - Math.PI / 2;
     const r = (v / 100) * R;
@@ -64,30 +103,117 @@ function RadarChart({ scores, animate }) {
   const data = SCORE_META.map((m, i) => pt(i, scores[m.key] || 0));
   const poly = data.map(p => p.join(',')).join(' ');
 
+  // Tooltip positioning
+  const tipMeta = activeTip !== null ? SCORE_META[activeTip] : null;
+  const tipVal = tipMeta ? (scores[tipMeta.key] || 0) : 0;
+  const tipColor = scoreColorRaw(tipVal);
+  const tipText = tipMeta ? scoreTip(tipMeta, tipVal) : '';
+
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0 4px' }}>
-      <svg viewBox={`0 0 ${size} ${size}`} style={{ width: '100%', maxWidth: 240 }}>
+    <div style={{
+      position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '8px 0 4px',
+      transform: animate ? 'scale(1) rotate(0deg)' : 'scale(0.6) rotate(-10deg)',
+      opacity: animate ? 1 : 0,
+      transition: 'all 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s',
+    }}>
+      <svg viewBox={`0 0 ${size} ${size}`} style={{ width: '100%', maxWidth: 280 }}
+        onMouseLeave={() => setActiveTip(null)}>
+        {/* Grid rings */}
         {grid.map((pts, i) => (
-          <polygon key={i} points={pts} fill="none" stroke="rgba(0,255,170,0.06)" strokeWidth="1" />
+          <polygon key={i} points={pts} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth="1" />
         ))}
-        {SCORE_META.map((_, i) => {
-          const [x, y] = pt(i, 100);
-          return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke="rgba(0,255,170,0.08)" strokeWidth="1" />;
-        })}
-        <polygon points={poly} fill="rgba(0,255,170,0.12)" stroke="var(--green)" strokeWidth="1.5"
-          style={{ opacity: animate ? 1 : 0, transition: 'opacity 0.8s ease 0.3s' }} />
-        {data.map(([x, y], i) => (
-          <circle key={i} cx={x} cy={y} r="3" fill="var(--green)"
-            style={{ opacity: animate ? 1 : 0, transition: `opacity 0.4s ease ${0.5 + i * 0.1}s` }} />
-        ))}
+        {/* Axis lines — color-tinted */}
         {SCORE_META.map((m, i) => {
-          const [x, y] = pt(i, 122);
+          const [x, y] = pt(i, 100);
+          const val = scores[m.key] || 0;
+          const col = scoreColorRaw(val);
+          return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke={col} strokeWidth="1" strokeOpacity="0.15" />;
+        })}
+        {/* Color-coded fill segments */}
+        {SCORE_META.map((m, i) => {
+          const val = scores[m.key] || 0;
+          const next = (i + 1) % 5;
+          const valNext = scores[SCORE_META[next].key] || 0;
+          const [x1, y1] = pt(i, val);
+          const [x2, y2] = pt(next, valNext);
+          const col = scoreColorRaw(val);
+          return (
+            <polygon key={`seg-${i}`} points={`${cx},${cy} ${x1},${y1} ${x2},${y2}`}
+              fill={col} fillOpacity={animate ? 0.07 : 0}
+              style={{ transition: `fill-opacity 0.8s ease ${0.5 + i * 0.08}s` }} />
+          );
+        })}
+        {/* Data outline (dashed) */}
+        <polygon points={poly} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1" strokeDasharray="3,3"
+          style={{ opacity: animate ? 1 : 0, transition: 'opacity 0.8s ease 0.5s' }} />
+        {/* Data points — color-coded with glow */}
+        {data.map(([x, y], i) => {
+          const val = scores[SCORE_META[i].key] || 0;
+          const col = scoreColorRaw(val);
+          return (
+            <g key={i} style={{ opacity: animate ? 1 : 0, transition: `opacity 0.4s ease ${0.7 + i * 0.1}s` }}>
+              <circle cx={x} cy={y} r="8" fill={col} fillOpacity="0.1" />
+              <circle cx={x} cy={y} r="4.5" fill={col} stroke={col} strokeWidth="1" strokeOpacity="0.3" />
+            </g>
+          );
+        })}
+        {/* Invisible hit areas for tooltip */}
+        {data.map(([x, y], i) => (
+          <circle key={`hit-${i}`} cx={x} cy={y} r="22" fill="transparent" style={{ cursor: 'pointer' }}
+            onMouseEnter={() => setActiveTip(i)}
+            onTouchStart={(e) => { e.preventDefault(); setActiveTip(activeTip === i ? null : i); }}
+          />
+        ))}
+        {/* Axis icons */}
+        {SCORE_META.map((m, i) => {
+          const [x, y] = pt(i, 128);
           return (
             <text key={i} x={x} y={y} textAnchor="middle" dominantBaseline="middle"
-              fill="var(--muted)" fontSize="10" fontFamily="var(--mono)">{m.icon}</text>
+              fill="var(--muted)" fontSize="14" fontFamily="var(--mono)">{m.icon}</text>
+          );
+        })}
+        {/* Small score values near icons */}
+        {SCORE_META.map((m, i) => {
+          const val = scores[m.key] || 0;
+          const col = scoreColorRaw(val);
+          const [x, y] = pt(i, 118);
+          const offsetY = i === 0 ? -13 : (i === 2 || i === 3) ? 13 : 0;
+          const offsetX = (i === 1 || i === 2) ? 15 : (i === 3 || i === 4) ? -15 : 0;
+          return (
+            <text key={`val-${i}`} x={x + offsetX} y={y + offsetY} textAnchor="middle" dominantBaseline="middle"
+              fill={col} fontSize="9" fontFamily="var(--mono)" fontWeight="700" opacity="0.6">{val}</text>
           );
         })}
       </svg>
+
+      {/* Tap hint */}
+      {!activeTip && activeTip !== 0 && (
+        <div style={{
+          font: '400 10px/1 var(--mono)', color: 'rgba(255,255,255,0.15)',
+          letterSpacing: 1, marginTop: 4, textAlign: 'center',
+        }}>TAP EACH POINT TO EXPLORE</div>
+      )}
+
+      {/* Tooltip */}
+      {activeTip !== null && tipMeta && (
+        <div style={{
+          marginTop: 8, width: '100%', maxWidth: 280,
+          background: 'rgba(7,7,13,0.95)', border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 12, padding: '12px 14px',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+          animation: 'fadeInUp 0.25s ease',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+            <span style={{ fontSize: 16 }}>{tipMeta.icon}</span>
+            <span style={{ font: '700 12px/1 var(--mono)', color: tipColor }}>{tipMeta.label}</span>
+            <span style={{ font: '900 12px/1 var(--mono)', color: tipColor, marginLeft: 'auto' }}>{tipVal}<span style={{ opacity: 0.4, fontWeight: 400 }}>/100</span></span>
+          </div>
+          <div style={{ height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.06)', marginBottom: 8, overflow: 'hidden' }}>
+            <div style={{ height: '100%', borderRadius: 2, width: `${tipVal}%`, background: tipColor, transition: 'width 0.4s ease' }} />
+          </div>
+          <div style={{ font: '400 11px/1.45 var(--serif)', color: 'rgba(255,255,255,0.55)' }}>{tipText}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -132,7 +258,7 @@ export default function SocialRadar() {
   const [result, setResult] = useState(null);
   const [showResult, setShowResult] = useState(false);
   const [error, setError] = useState(null);
-  const [uploadedImage, setUploadedImage] = useState(null);
+  const [uploadedImages, setUploadedImages] = useState([]);
   const [copiedReply, setCopiedReply] = useState(null);
   const [shareImg, setShareImg] = useState(null);
   const textareaRef = useRef(null);
@@ -140,7 +266,7 @@ export default function SocialRadar() {
   const fileInputRef = useRef(null);
 
   const analyze = async () => {
-    if ((!input.trim() && !uploadedImage) || scanning) return;
+    if ((!input.trim() && uploadedImages.length === 0) || scanning) return;
 
     setScanning(true);
     setResult(null);
@@ -152,7 +278,7 @@ export default function SocialRadar() {
       const fd = new FormData();
 
       if (input.trim()) fd.append("text", input.trim());
-      if (uploadedImage) fd.append("image", uploadedImage);
+      uploadedImages.forEach((file) => fd.append("images", file));
 
       const res = await fetch("/api/analyze", {
         method: "POST",
@@ -160,7 +286,10 @@ export default function SocialRadar() {
       });
 
       if (!res.ok) {
-        const msg = await res.text().catch(() => "");
+        const errText = await res.text().catch(() => "");
+        // Try to parse JSON error, fall back to raw text
+        let msg = errText;
+        try { const j = JSON.parse(errText); msg = j.error || errText; } catch {}
         throw new Error(msg || `Request failed (${res.status})`);
       }
 
@@ -177,15 +306,19 @@ export default function SocialRadar() {
   };
 
   const handleFileUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadedImage(file);
-    // Reset the input so the same file can be re-selected
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    setUploadedImages((prev) => {
+      const combined = [...prev, ...files];
+      // Client-side enforce max 3
+      return combined.slice(0, 3);
+    });
+    // Reset so the same files can be re-selected
     e.target.value = '';
   };
 
-  const removeUpload = () => {
-    setUploadedImage(null);
+  const removeUpload = (index) => {
+    setUploadedImages((prev) => prev.filter((_, i) => i !== index));
   };
 
   const copyReply = (type, text) => {
@@ -283,7 +416,7 @@ export default function SocialRadar() {
   };
 
   const reset = () => {
-    setInput(''); setResult(null); setShowResult(false); setError(null); setShareImg(null); setUploadedImage(null);
+    setInput(''); setResult(null); setShowResult(false); setError(null); setShareImg(null); setUploadedImages([]);
     textareaRef.current?.focus();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -354,46 +487,59 @@ export default function SocialRadar() {
             {input.length}
           </div>
 
+          {/* Empty state hint */}
+          {!input && uploadedImages.length === 0 && !result && (
+            <div style={{ textAlign: 'center', padding: '0 20px 18px' }}>
+              <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.5, animation: 'hintFloat 3s ease-in-out infinite' }}>📡</div>
+              <div style={{ font: '400 13px/1.6 var(--serif)', color: 'rgba(255,255,255,0.25)' }}>
+                Drop a message here and <span style={{ color: 'rgba(0,255,170,0.4)' }}>let's decode it</span>.<br />Screenshots work too.
+              </div>
+            </div>
+          )}
+
           {/* Upload button row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px 12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 16px 12px', flexWrap: 'wrap' }}>
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*,.pdf,.png,.jpg,.jpeg,.webp"
+              multiple
+              accept="image/*,.png,.jpg,.jpeg,.webp"
               onChange={handleFileUpload}
               style={{ display: 'none' }}
             />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-                background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
-                borderRadius: 100, padding: '6px 14px',
-                font: '400 11px/1 var(--mono)', color: 'rgba(255,255,255,0.4)',
-                cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 0.2s',
-              }}
-            >
-              📎 Upload screenshot
-            </button>
+            {uploadedImages.length < 3 && (
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: 100, padding: '6px 14px',
+                  font: '400 11px/1 var(--mono)', color: 'rgba(255,255,255,0.4)',
+                  cursor: 'pointer', whiteSpace: 'nowrap', transition: 'all 0.2s',
+                }}
+              >
+                📎 {uploadedImages.length === 0 ? 'Upload screenshots' : 'Add more'} ({uploadedImages.length}/3)
+              </button>
+            )}
 
-            {uploadedImage && (
-              <div style={{
+            {uploadedImages.map((file, i) => (
+              <div key={`${file.name}-${i}`} style={{
                 display: 'inline-flex', alignItems: 'center', gap: 8,
                 background: 'rgba(0,255,170,0.06)', border: '1px solid rgba(0,255,170,0.12)',
                 borderRadius: 100, padding: '5px 12px',
                 font: '400 11px/1 var(--mono)', color: 'var(--green)',
-                maxWidth: '60%', overflow: 'hidden',
+                maxWidth: '55%', overflow: 'hidden',
               }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {uploadedImage.name}
+                  {file.name}
                 </span>
                 <span
-                  onClick={removeUpload}
+                  onClick={() => removeUpload(i)}
                   style={{ cursor: 'pointer', opacity: 0.6, fontSize: 13, flexShrink: 0 }}
                   title="Remove"
                 >✕</span>
               </div>
-            )}
+            ))}
           </div>
         </div>
 
@@ -411,13 +557,13 @@ export default function SocialRadar() {
         </div>
 
         {/* ── CTA ── */}
-        <button onClick={analyze} disabled={(!input.trim() && !uploadedImage) || scanning}
+        <button onClick={analyze} disabled={(!input.trim() && uploadedImages.length === 0) || scanning}
           style={{
             width: '100%', padding: 16, border: 'none', borderRadius: 12,
             font: '700 13px/1 var(--mono)', letterSpacing: 2, textTransform: 'uppercase',
-            cursor: (input.trim() || uploadedImage) && !scanning ? 'pointer' : 'default', marginBottom: 28,
-            background: scanning ? 'rgba(0,255,170,0.08)' : (input.trim() || uploadedImage) ? 'linear-gradient(135deg, var(--green), #00cc88)' : 'rgba(255,255,255,0.04)',
-            color: scanning ? 'var(--green)' : (input.trim() || uploadedImage) ? '#070a0d' : 'rgba(255,255,255,0.15)',
+            cursor: (input.trim() || uploadedImages.length > 0) && !scanning ? 'pointer' : 'default', marginBottom: 28,
+            background: scanning ? 'rgba(0,255,170,0.08)' : (input.trim() || uploadedImages.length > 0) ? 'linear-gradient(135deg, var(--green), #00cc88)' : 'rgba(255,255,255,0.04)',
+            color: scanning ? 'var(--green)' : (input.trim() || uploadedImages.length > 0) ? '#070a0d' : 'rgba(255,255,255,0.15)',
             transition: 'all 0.3s',
           }}>
           {scanning ? '◎ SCANNING SIGNAL…' : '⎊ ANALYZE MESSAGE'}
@@ -436,30 +582,39 @@ export default function SocialRadar() {
 
             {/* Verdict */}
             <div style={{
-              textAlign: 'center', padding: '28px 20px', borderRadius: 14,
+              textAlign: 'center', padding: '36px 24px 32px', borderRadius: 16,
               background: verdictBg, border: `1px solid ${verdictBorder}`,
-              opacity: showResult ? 1 : 0, transform: showResult ? 'translateY(0)' : 'translateY(16px)',
-              transition: 'all 0.5s ease',
+              boxShadow: `0 0 40px ${verdictBorder}, 0 0 80px ${verdictBorder}`,
+              opacity: showResult ? 1 : 0, transform: showResult ? 'scale(1) translateY(0)' : 'scale(0.96) translateY(20px)',
+              transition: 'all 0.6s cubic-bezier(0.16, 1, 0.3, 1)',
             }}>
-              <div style={{ fontSize: 36, marginBottom: 10 }}>{result.verdict_emoji}</div>
-              <div style={{ font: '900 20px/1 var(--display)', letterSpacing: 3, color: verdictColor }}>{result.verdict}</div>
+              <div style={{ fontSize: 52, marginBottom: 14, filter: 'drop-shadow(0 0 12px rgba(255,255,255,0.15))' }}>{result.verdict_emoji}</div>
+              <div style={{ font: '900 26px/1 var(--display)', letterSpacing: 4, color: verdictColor }}>{result.verdict}</div>
+              <div style={{ marginTop: 12, font: '400 11px/1 var(--mono)', color: 'var(--muted)', letterSpacing: 1.5 }}>SIGNAL VERDICT</div>
             </div>
 
             {/* Translation */}
             <div style={{
-              background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 14, padding: 20,
+              background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 16, padding: '24px 24px 22px',
+              borderLeft: '3px solid rgba(0,255,170,0.3)',
               opacity: showResult ? 1 : 0, transform: showResult ? 'translateY(0)' : 'translateY(16px)',
               transition: 'all 0.5s ease 0.1s',
             }}>
-              <div style={{ font: '500 10px/1 var(--mono)', color: 'rgba(0,255,170,0.5)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 12 }}>
+              <div style={{ font: '500 10px/1 var(--mono)', color: 'rgba(0,255,170,0.5)', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 14 }}>
                 ◈ DECODED TRANSLATION
               </div>
-              <p style={{ font: 'italic 700 18px/1.55 var(--serif)', color: '#fff', margin: 0 }}>"{result.translation}"</p>
+              <p style={{ font: 'italic 700 22px/1.5 var(--serif)', color: '#fff', margin: '0 0 4px' }}>"{result.translation}"</p>
               <div style={{
-                marginTop: 14, padding: '10px 14px', background: 'rgba(255,255,255,0.025)', borderRadius: 8,
+                marginTop: 16, padding: '12px 16px', background: 'rgba(255,255,255,0.025)', borderRadius: 8,
                 font: '400 12px/1.4 var(--mono)', color: 'rgba(255,255,255,0.45)',
               }}>HIDDEN TONE: {result.hidden_tone}</div>
             </div>
+
+            {/* ── Visual break: hero section above, detail section below ── */}
+            <div style={{
+              height: 1, margin: '4px 40px',
+              background: 'linear-gradient(90deg, transparent, var(--border), transparent)',
+            }} />
 
             {/* Radar + Scores */}
             <div style={{
@@ -553,14 +708,34 @@ export default function SocialRadar() {
             )}
 
             {/* Share + Reset */}
-            <div style={{ textAlign: 'center', paddingTop: 4, paddingBottom: 32 }}>
+            <div style={{
+              textAlign: 'center', paddingTop: 8, paddingBottom: 32,
+              opacity: showResult ? 1 : 0, transform: showResult ? 'translateY(0)' : 'translateY(16px)',
+              transition: 'all 0.5s ease 0.6s',
+            }}>
               <button onClick={generateShareCard}
                 style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 8,
-                  background: 'none', border: '1px solid rgba(255,255,255,0.08)',
-                  borderRadius: 100, padding: '10px 22px',
-                  font: '500 12px/1 var(--mono)', color: 'var(--muted)', cursor: 'pointer', letterSpacing: 1,
-                }}>📤 SHARE RESULT CARD</button>
+                  display: 'inline-flex', alignItems: 'center', gap: 10, position: 'relative', overflow: 'hidden',
+                  background: 'linear-gradient(135deg, rgba(0,255,170,0.12), rgba(0,212,255,0.08))',
+                  border: '1px solid rgba(0,255,170,0.25)',
+                  borderRadius: 100, padding: '14px 28px',
+                  font: '700 12px/1 var(--mono)', color: 'var(--green)', cursor: 'pointer',
+                  letterSpacing: 1.5, textTransform: 'uppercase',
+                  animation: 'shareGlow 3s ease-in-out infinite',
+                  backgroundSize: '200% 100%',
+                }}>
+                <span style={{
+                  position: 'absolute', inset: 0, pointerEvents: 'none',
+                  background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.08) 50%, transparent 100%)',
+                  backgroundSize: '200% 100%',
+                  animation: 'shimmer 3s ease-in-out infinite',
+                }} />
+                <span style={{ position: 'relative' }}>📤 SHARE YOUR RESULTS</span>
+              </button>
+              <div style={{
+                font: '400 11px/1.4 var(--mono)', color: 'rgba(255,255,255,0.2)',
+                marginTop: 10, letterSpacing: 0.5,
+              }}>show them what you found 👀</div>
               {shareImg && (
                 <div style={{ marginTop: 14, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--border)' }}>
                   <img src={shareImg} alt="Share card" style={{ width: '100%', display: 'block' }} />
