@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">social-radar</string>
+    <string name="title_activity_main">social-radar</string>
+    <string name="package_name">com.socialradar.app</string>
+    <string name="custom_url_scheme">com.socialradar.app</string>
+</resources>

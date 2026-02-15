@@ -9,7 +9,7 @@ import { useState, useRef, useEffect } from 'react';
 // ── Constants ──
 const EXAMPLES = [
   `Hey! So I've been thinking about what you said last week and honestly I'm not mad or anything lol. I just think maybe we should take some space? Like not a break break, just some breathing room. You're great though seriously. Let me know what you think whenever 💕`,
-  `Hi team, just wanted to circle back on the deliverables we discussed. I know everyone's been really busy, but I think we need to be more aligned going forward. I've cc'd leadership so we're all on the same page. Let's sync tomorrow — I've already blocked time on your calendars. Thanks!`,
+  `Per my last email, nobody has followed up on what we discussed. I shouldn't have to chase people down. I've looped in leadership since clearly we need more accountability here. I blocked time on your calendars for tomorrow morning — attendance is mandatory. We need to get serious.`,
   `yeah idk maybe we could hang out this weekend? or not, totally up to you. i'm free saturday but also have some stuff i could do so either way is cool. just lmk whenever no pressure haha`,
 ];
 
