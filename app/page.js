@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Purchases } from '@revenuecat/purchases-capacitor';
 import { Capacitor } from '@capacitor/core';
+import { Preferences } from '@capacitor/preferences';
 
 const RC_API_KEY = "goog_HxvgYKRXpUmUrZOKfkhpZYijRan";
 const ENTITLEMENT_ID = "Social Radar Pro";
@@ -96,8 +97,11 @@ const S = {
 
 // ── Paywall Modal ──
 function PaywallModal({ offerings, onPurchase, onRestore, onDismiss, purchasing, restoring, purchaseError }) {
-  const monthly = offerings?.current?.monthly;
-  const annual = offerings?.current?.annual;
+  // RC uses $rc_monthly and $rc_annual as package identifiers
+  const monthly = offerings?.current?.availablePackages?.find(p => p.packageType === 'MONTHLY') 
+    || offerings?.current?.availablePackages?.find(p => p.identifier === '$rc_monthly');
+  const annual = offerings?.current?.availablePackages?.find(p => p.packageType === 'ANNUAL')
+    || offerings?.current?.availablePackages?.find(p => p.identifier === '$rc_annual');
   const [selected, setSelected] = useState('monthly');
 
   const selectedPkg = selected === 'monthly' ? monthly : annual;
@@ -395,6 +399,7 @@ export default function SocialRadar() {
 
   // ── RevenueCat state ──
   const [isPro, setIsPro] = useState(false);
+  const [usageDisplay, setUsageDisplay] = useState('3 text scans · 1 image scan left today');
   const [showPaywall, setShowPaywall] = useState(false);
   const [offerings, setOfferings] = useState(null);
   const [purchasing, setPurchasing] = useState(false);
@@ -435,6 +440,8 @@ export default function SocialRadar() {
           setShowPaywall(true);
         }
 
+        // Refresh usage display
+        await refreshUsageDisplay();
         setRcReady(true);
       } catch (e) {
         console.error('❌ RevenueCat error:', e);
@@ -485,17 +492,25 @@ export default function SocialRadar() {
     }
   };
 
-  // ── Free tier usage tracking ──
-  const getUsage = () => {
+  // ── Free tier usage tracking (Capacitor Preferences for native persistence) ──
+  const refreshUsageDisplay = async () => {
+    const usage = await getUsage();
+    const textsLeft = Math.max(0, FREE_DAILY_TEXTS - usage.texts);
+    const imagesLeft = Math.max(0, FREE_DAILY_IMAGES - usage.images);
+    setUsageDisplay(`${textsLeft} text scan${textsLeft !== 1 ? 's' : ''} · ${imagesLeft} image scan left today`);
+  };
+
+  const getUsage = async () => {
     const today = new Date().toDateString();
     try {
-      const stored = JSON.parse(localStorage.getItem('sr_usage') || '{}');
+      const { value } = await Preferences.get({ key: 'sr_usage' });
+      const stored = JSON.parse(value || '{}');
       if (stored.date !== today) return { date: today, texts: 0, images: 0 };
       return stored;
     } catch { return { date: today, texts: 0, images: 0 }; }
   };
-  const saveUsage = (usage) => {
-    try { localStorage.setItem('sr_usage', JSON.stringify(usage)); } catch {}
+  const saveUsage = async (usage) => {
+    try { await Preferences.set({ key: 'sr_usage', value: JSON.stringify(usage) }); } catch {}
   };
 
   const analyze = async () => {
@@ -503,7 +518,7 @@ export default function SocialRadar() {
 
     // Gate: check free tier limits if not pro
     if (!isPro) {
-      const usage = getUsage();
+      const usage = await getUsage();
       const isImageScan = uploadedImages.length > 0;
       if (isImageScan && usage.images >= FREE_DAILY_IMAGES) {
         setShowPaywall(true); return;
@@ -524,7 +539,7 @@ export default function SocialRadar() {
       if (input.trim()) fd.append("text", input.trim());
       uploadedImages.forEach((file) => fd.append("images", file));
 
-      const res = await fetch("/api/analyze", {
+     const res = await fetch("https://social-radar-delta.vercel.app/api/analyze", {
         method: "POST",
         body: fd,
       });
@@ -542,10 +557,11 @@ export default function SocialRadar() {
 
       // Increment usage counter for free tier
       if (!isPro) {
-        const usage = getUsage();
+        const usage = await getUsage();
         if (uploadedImages.length > 0) usage.images++;
         else usage.texts++;
-        saveUsage(usage);
+        await saveUsage(usage);
+        await refreshUsageDisplay();
       }
     } catch (e) {
       setError(e?.message || "Something went wrong.");
@@ -997,16 +1013,9 @@ export default function SocialRadar() {
         {/* ── Upgrade prompt for non-pro users ── */}
         {!isPro && !showPaywall && (
           <div style={{ textAlign: 'center', marginTop: 8, marginBottom: 16 }}>
-            {(() => {
-              const usage = getUsage();
-              const textsLeft = Math.max(0, FREE_DAILY_TEXTS - usage.texts);
-              const imagesLeft = Math.max(0, FREE_DAILY_IMAGES - usage.images);
-              return (
-                <div style={{ font: '400 11px/1.5 var(--mono)', color: 'rgba(255,255,255,0.2)', marginBottom: 8 }}>
-                  {textsLeft} text scan{textsLeft !== 1 ? 's' : ''} · {imagesLeft} image scan left today
-                </div>
-              );
-            })()}
+            <div style={{ font: '400 11px/1.5 var(--mono)', color: 'rgba(255,255,255,0.2)', marginBottom: 8 }}>
+              {usageDisplay}
+            </div>
             <button onClick={() => setShowPaywall(true)} style={{
               background: 'none', border: '1px solid rgba(0,255,170,0.15)',
               borderRadius: 100, padding: '8px 20px',
