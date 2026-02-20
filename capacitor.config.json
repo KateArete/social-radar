@@ -1,10 +1,9 @@
 {
   "appId": "com.socialradar.kates",
   "appName": "Social Radar",
-  "webDir": "public",
+  "webDir": "out",
   "server": {
-    "url": "https://social-radar-delta.vercel.app",
-    "cleartext": false
+    "androidScheme": "https"
   }
 }
 

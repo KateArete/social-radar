@@ -4,15 +4,21 @@ export const runtime = "nodejs";
 const MAX_IMAGES = 3;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 const MODEL = process.env.AI_MODEL || "gpt-4o-mini";
-
 const AI_BASE_URL = process.env.AI_BASE_URL || "https://api.openai.com/v1";
 const AI_API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY;
 
-// ---- simple in-memory rate limit ----
+// ── Rate limiting: per-minute burst protection ──
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX = 12;
+const RATE_LIMIT_MAX = 5; // max 5 requests per minute per IP (down from 12)
+
+// ── Daily cap: hard limit per IP per day to protect costs ──
+const DAILY_CAP_MAX = 10; // max 10 requests per IP per day (free users get 3+1 via client, this is server-side safety net)
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const rl = globalThis.__social_radar_rl || new Map();
+const daily = globalThis.__social_radar_daily || new Map();
 globalThis.__social_radar_rl = rl;
+globalThis.__social_radar_daily = daily;
 
 function rateLimit(ip) {
   const now = Date.now();
@@ -24,8 +30,30 @@ function rateLimit(ip) {
   entry.count += 1;
   rl.set(ip, entry);
   const remaining = Math.max(0, RATE_LIMIT_MAX - entry.count);
-  const limited = entry.count > RATE_LIMIT_MAX;
-  return { limited, remaining, resetAt: entry.resetAt };
+  return { limited: entry.count > RATE_LIMIT_MAX, remaining, resetAt: entry.resetAt };
+}
+
+function dailyLimit(ip) {
+  const now = Date.now();
+  const today = new Date().toDateString();
+  const entry = daily.get(ip) || { count: 0, date: today };
+  if (entry.date !== today) {
+    entry.count = 0;
+    entry.date = today;
+  }
+  entry.count += 1;
+  daily.set(ip, entry);
+  return { limited: entry.count > DAILY_CAP_MAX, count: entry.count };
+}
+
+// ── Cleanup old entries every hour to prevent memory leak ──
+if (!globalThis.__social_radar_cleanup) {
+  globalThis.__social_radar_cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of rl.entries()) {
+      if (now > entry.resetAt) rl.delete(ip);
+    }
+  }, 60 * 60 * 1000);
 }
 
 function json(status, obj, extraHeaders = {}) {
@@ -52,7 +80,6 @@ async function fileToDataUrl(file) {
   return `data:${mime};base64,${b64}`;
 }
 
-// ── The prompt that makes Social Radar actually decode ──
 const SYSTEM_PROMPT = `You are SOCIAL RADAR — a brutally honest communication analyst who decodes the REAL meaning behind messages.
 
 Your job is NOT to rewrite or paraphrase the message. Your job is to EXPOSE what the sender is actually thinking, feeling, and trying to accomplish beneath their words.
@@ -108,8 +135,9 @@ Return STRICT JSON only. No markdown, no backticks, no explanation outside the J
 
 export async function POST(req) {
   try {
-    // ---- Rate limit ----
     const ip = getClientIp(req);
+
+    // ── Per-minute burst check ──
     const rlRes = rateLimit(ip);
     const rlHeaders = {
       "X-RateLimit-Limit": String(RATE_LIMIT_MAX),
@@ -117,27 +145,31 @@ export async function POST(req) {
       "X-RateLimit-Reset": String(Math.floor(rlRes.resetAt / 1000)),
     };
     if (rlRes.limited) {
-      return json(429, { error: "Rate limit exceeded. Please wait and try again." }, rlHeaders);
+      return json(429, { error: "Too many requests. Please slow down." }, rlHeaders);
     }
 
-    // ---- Parse multipart ----
+    // ── Daily cap check ──
+    const dailyRes = dailyLimit(ip);
+    if (dailyRes.limited) {
+      return json(429, {
+        error: "Daily limit reached. Upgrade to Pro for unlimited scans.",
+        daily: true,
+      }, rlHeaders);
+    }
+
+    // ── Parse multipart ──
     const formData = await req.formData();
-
     const text = (formData.get("text") || "").toString().trim();
-
-    // IMPORTANT: must be getAll("images") to match frontend fd.append("images", file)
     const rawImages = formData.getAll("images") || [];
     const images = rawImages.filter(Boolean);
 
-    // ---- Validate ----
+    // ── Validate ──
     if (!text && images.length === 0) {
       return json(400, { error: "Provide a message or upload a screenshot" }, rlHeaders);
     }
-
     if (images.length > MAX_IMAGES) {
       return json(400, { error: `Max ${MAX_IMAGES} screenshots allowed` }, rlHeaders);
     }
-
     for (const f of images) {
       if (!(f instanceof File)) {
         return json(400, { error: "Invalid upload. Please upload image files only." }, rlHeaders);
@@ -149,12 +181,11 @@ export async function POST(req) {
         return json(400, { error: `Each image must be under ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)}MB.` }, rlHeaders);
       }
     }
-
     if (!AI_API_KEY) {
       return json(500, { error: "Server is missing AI_API_KEY / OPENAI_API_KEY env var." }, rlHeaders);
     }
 
-    // ---- Build multimodal content ----
+    // ── Build multimodal content ──
     const content = [
       {
         type: "text",
@@ -184,7 +215,6 @@ If a score is unknown, still output a number 0-100.`
     if (text) {
       content.push({ type: "text", text: `Message to decode:\n${text}` });
     }
-
     for (const f of images) {
       const dataUrl = await fileToDataUrl(f);
       content.push({ type: "image_url", image_url: { url: dataUrl } });
@@ -224,7 +254,6 @@ If a score is unknown, still output a number 0-100.`
       return json(500, { error: "Model returned non-JSON output", raw: String(raw).slice(0, 1500) }, rlHeaders);
     }
 
-    // IMPORTANT: return parsed at TOP LEVEL to match your current frontend setResult(data)
     return json(200, parsed, rlHeaders);
   } catch (e) {
     return json(500, { error: "Server error", details: String(e?.message || e) });

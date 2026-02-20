@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // PWA headers
+  output: 'export',
   async headers() {
     return [
       {
