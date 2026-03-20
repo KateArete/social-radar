@@ -97,8 +97,7 @@ const S = {
 
 // ── Paywall Modal ──
 function PaywallModal({ offerings, onPurchase, onRestore, onDismiss, purchasing, restoring, purchaseError }) {
-  // RC uses $rc_monthly and $rc_annual as package identifiers
-  const monthly = offerings?.current?.availablePackages?.find(p => p.packageType === 'MONTHLY') 
+  const monthly = offerings?.current?.availablePackages?.find(p => p.packageType === 'MONTHLY')
     || offerings?.current?.availablePackages?.find(p => p.identifier === '$rc_monthly');
   const annual = offerings?.current?.availablePackages?.find(p => p.packageType === 'ANNUAL')
     || offerings?.current?.availablePackages?.find(p => p.identifier === '$rc_annual');
@@ -125,6 +124,7 @@ function PaywallModal({ offerings, onPurchase, onRestore, onDismiss, purchasing,
         borderRadius: '24px 24px 0 0',
         padding: '32px 24px calc(32px + var(--safe-bottom))',
         animation: 'paywallIn 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+        position: 'relative',
       }}>
         {/* Close button */}
         <button onClick={onDismiss} style={{
@@ -232,8 +232,20 @@ function PaywallModal({ offerings, onPurchase, onRestore, onDismiss, purchasing,
           {restoring ? 'Restoring…' : '↺ Restore Purchases'}
         </button>
 
-        <div style={{ font: '400 10px/1.5 var(--mono)', color: 'rgba(255,255,255,0.15)', textAlign: 'center' }}>
+        {/* Legal */}
+        <div style={{ font: '400 10px/1.5 var(--mono)', color: 'rgba(255,255,255,0.15)', textAlign: 'center', marginBottom: 12 }}>
           Subscriptions auto-renew. Cancel anytime in Google Play.
+        </div>
+
+        <div style={{ textAlign: 'center' }}>
+          <a href="https://social-radar-delta.vercel.app/privacy.html" target="_blank" rel="noopener noreferrer"
+            style={{ font: '400 10px/1 var(--mono)', color: 'rgba(255,255,255,0.2)', marginRight: 16, textDecoration: 'underline' }}>
+            Privacy Policy
+          </a>
+          <a href="https://social-radar-delta.vercel.app/terms.html" target="_blank" rel="noopener noreferrer"
+            style={{ font: '400 10px/1 var(--mono)', color: 'rgba(255,255,255,0.2)', textDecoration: 'underline' }}>
+            Terms of Service
+          </a>
         </div>
       </div>
     </div>
@@ -415,7 +427,6 @@ export default function SocialRadar() {
   useEffect(() => {
     const initRC = async () => {
       if (!Capacitor.isNativePlatform()) {
-        // Dev mode: treat as pro so you can test UI in browser
         console.log('Not native — skipping RC, dev mode unlocked');
         setIsPro(true);
         setRcReady(true);
@@ -426,26 +437,22 @@ export default function SocialRadar() {
         await Purchases.configure({ apiKey: RC_API_KEY });
         console.log('✅ RevenueCat initialized');
 
-        // Check entitlement
         const { customerInfo } = await Purchases.getCustomerInfo();
         const active = customerInfo.entitlements.active[ENTITLEMENT_ID];
         setIsPro(!!active);
 
-        // Load offerings for paywall
         const offeringsResult = await Purchases.getOfferings();
         setOfferings(offeringsResult.offerings);
 
-        // Show paywall if not subscribed
         if (!active) {
           setShowPaywall(true);
         }
 
-        // Refresh usage display
         await refreshUsageDisplay();
         setRcReady(true);
       } catch (e) {
         console.error('❌ RevenueCat error:', e);
-        setRcReady(true); // Let app load anyway
+        setRcReady(true);
       }
     };
 
@@ -492,7 +499,7 @@ export default function SocialRadar() {
     }
   };
 
-  // ── Free tier usage tracking (Capacitor Preferences for native persistence) ──
+  // ── Free tier usage tracking ──
   const refreshUsageDisplay = async () => {
     const usage = await getUsage();
     const textsLeft = Math.max(0, FREE_DAILY_TEXTS - usage.texts);
@@ -509,6 +516,7 @@ export default function SocialRadar() {
       return stored;
     } catch { return { date: today, texts: 0, images: 0 }; }
   };
+
   const saveUsage = async (usage) => {
     try { await Preferences.set({ key: 'sr_usage', value: JSON.stringify(usage) }); } catch {}
   };
@@ -516,7 +524,6 @@ export default function SocialRadar() {
   const analyze = async () => {
     if ((!input.trim() && uploadedImages.length === 0) || scanning) return;
 
-    // Gate: check free tier limits if not pro
     if (!isPro) {
       const usage = await getUsage();
       const isImageScan = uploadedImages.length > 0;
@@ -539,7 +546,7 @@ export default function SocialRadar() {
       if (input.trim()) fd.append("text", input.trim());
       uploadedImages.forEach((file) => fd.append("images", file));
 
-     const res = await fetch("https://social-radar-delta.vercel.app/api/analyze", {
+      const res = await fetch("https://social-radar-delta.vercel.app/api/analyze", {
         method: "POST",
         body: fd,
       });
@@ -555,7 +562,6 @@ export default function SocialRadar() {
       setResult(data);
       setShowResult(true);
 
-      // Increment usage counter for free tier
       if (!isPro) {
         const usage = await getUsage();
         if (uploadedImages.length > 0) usage.images++;
