@@ -147,6 +147,46 @@ function PaywallModal({ offerings, onPurchase, onRestore, onDismiss, purchasing,
           <p style={{ font: '400 14px/1.5 var(--serif)', color: 'var(--muted)' }}>
             See what they actually mean.<br />Decode patterns. Respond with confidence.
           </p>
+          <p style={{ font: '400 14px/1.5 var(--serif)', color: 'var(--muted)' }}>
+  See what they actually mean.<br />Decode patterns. Respond with confidence.
+</p>
+
+{/* 👉 ADD THIS RIGHT HERE */}
+<div style={{
+  marginTop: 14,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  gap: 8,
+}}>
+  <a
+    href="https://social-radar-delta.vercel.app/privacy.html"
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{
+      font: '600 12px/1.2 var(--mono)',
+      color: 'rgba(255,255,255,0.82)',
+      textDecoration: 'underline',
+    }}
+  >
+    Privacy Policy
+  </a>
+
+  <a
+    href="https://social-radar-delta.vercel.app/terms.html"
+    target="_blank"
+    rel="noopener noreferrer"
+    style={{
+      font: '600 12px/1.2 var(--mono)',
+      color: 'rgba(255,255,255,0.82)',
+      textDecoration: 'underline',
+    }}
+  >
+    Terms of Service
+  </a>
+</div>
+
+</div>
         </div>
 
         {/* Features */}
